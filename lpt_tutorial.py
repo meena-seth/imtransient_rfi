@@ -130,17 +130,28 @@ pdb.set_trace()
 
 fig, ax = plt.subplots(figsize=(10, 4))
 for m in MASKS:
+    #@me Where weight is nonzero, calculate sigma = 1/sqrt(weight) *1000 -> std in mJy. Where weight is zero, replace with np.nan. 
     sigma = np.where(weight[m] > 0, 1 / np.sqrt(np.where(weight[m] > 0, weight[m], 1)), np.nan) * 1e3  # mJy
-    centre_x = best[m]["x_index"] == x.size // 2
+    #@me Mask to identify which best['x_index'] values are on the centre of the beam. 
+    centre_x = best[m]["x_index"] == x.size // 2 
+    #@me For each tel-y value there's 8668 values for the x position in the beam that gave best SNR (27 possible)
+    #@me For a given tel-y, look at those. Flag which ones are in the centre of the beam. then get the median noise for those values. 
+    #@me AKA the median noise at that tel-y ONLY doing median of times when highest SNR was in centre of beam. 
     med_c = [np.nanmedian(sigma[e][centre_x[e]]) if centre_x[e].any() else np.nan for e in range(el.size)]
     ax.semilogy(el, med_c, label=f"mask = {m}, best x at the beam centre")
+    #@me Now just doing: for a given tel-y, the median noise for all times throughout the day. 
     med_all = [np.nanmedian(row) if np.isfinite(row).any() else np.nan for row in sigma]
     ax.semilogy(el, med_all, ls="--", label=f"mask = {m}, all samples")
-    i0 = np.argmin(np.abs(el))
+    i0 = np.argmin(np.abs(el)) #@me central tel-y value. 
     print(f"mask = {m}: noise at telescope-y = 0, beam centre: {med_c[i0]:.2f} mJy")
 ax.set(xlabel="telescope-y", ylabel="noise of one sample [mJy]", ylim=(0.5, 200))
 ax.legend()
 
+#@me loading in noise scale file. 
+#@me noise_scale = weights (expected noise) / measured noise. Shape: (2, 1024, 1, 1217) -> (pol, freq, ew, el)
+#@me Right now, NO INFO ABOUT X. Divides the sky into horizontal strips w/ fringes defined by 22m baseline, one at each tel-y. 
+#@me For each strip, shows how much noiser it is than expected at 1024 frequencies. 
+#@me But we don't know where in the strip was noisier and when. 
 ns = containers.HybridVisNoiseScale.from_file(run_file("full", "noise_scale"), distributed=True)
 print("noise_scale:", {k: v.shape for k, v in ns.index_map.items()})
 for name, dset in ns.datasets.items():
@@ -162,6 +173,7 @@ axes[-1].set_xlabel("frequency [MHz]")
 plt.tight_layout()
 
 pdb.set_trace()
+
 #@me WHERE THE BRIGHT SOURCES ARE =========================
 
 SOURCES = {
@@ -181,6 +193,8 @@ BELOW_POLE = ["Cas A", "Cyg A"]
 marks = []  # (name, ra, el)
 src_pos = {}
 for name, body in SOURCES.items():
+    #@me Getting coords for all bright sources on that day. 
+    #@me Also setting up labels for the plot (labeling Cas A & Cyg A as below pole, labeling Galactic centre)
     r, d = chime.object_coords(body, chime.lsd_to_unix(LSD + 0.5), deg=True)
     r, d = chime.object_coords(body, chime.lsd_to_unix(LSD + r / 360), deg=True)
     src_pos[name] = (r % 360, d)
@@ -200,16 +214,17 @@ def galactic_to_equatorial(l, b=0.0):
     xx = np.cos(dec_gp) * np.sin(b) - np.sin(dec_gp) * np.cos(b) * np.cos(l_ncp - l)
     return np.degrees(ra_gp + np.arctan2(y, xx)) % 360, np.degrees(np.arcsin(sin_dec))
 
-
+#@me Trace the Galactic plane (b = 0, all longitudes l): convert to RA & dec.
+#@me Then convert to tel-y when transiting CHIME. To plot Galactic plane across RA & Y-tel. 
 gp_ra, gp_dec = galactic_to_equatorial(np.linspace(0, 360, 721))
 order = np.argsort(gp_ra)
 gp_ra, gp_el = gp_ra[order], dec_to_el(gp_dec[order])
 
 # Expected position of the J1634+44 pulse in the map (NaN if there was no pulse
 # that day, which leaves it off the maps)
-HAVE_J1634 = LSD in J1634_UTC
+HAVE_J1634 = LSD in J1634_UTC #@me Check if the day we're looking at is also a day when CHIME saw J1634+44 & saved data.
 if HAVE_J1634:
-    ra_j = utc_to_ra(J1634_UTC[LSD])
+    ra_j = utc_to_ra(J1634_UTC[LSD]) #@me What RA, HA, dec and y-tel did CHIME see J1634 at? (Based on other data)
     ha_j = ((ra_j - J1634_RA_DEC[0] + 180) % 360) - 180
     dec_j = np.radians(J1634_RA_DEC[1])
     el_j = np.cos(LAT) * np.sin(dec_j) - np.sin(LAT) * np.cos(dec_j) * np.cos(np.radians(ha_j))
@@ -272,17 +287,22 @@ def plot_map(ax, img, title, vmin=0, vmax=10, log=False, ra_axis=ra, el_axis=el,
         ax.set_xlabel("RA at the start [deg]")
     return im
 
+#@me THE NOISE THAT SCALES WITH THE SKY =========================
+
 sky = containers.HybridVisSkyNoise.from_file(run_file("full", "sky_noise"))
 print("sky_noise:", {k: v.shape for k, v in sky.index_map.items()})
 print("datasets:", list(sky.datasets.keys()))
 
-sk_centre = sky.index_map["freq"]["centre"][:]
-sk_width = sky.index_map["freq"]["width"][:]
-blk = np.asarray(sky.index_map["block"][:], dtype=float)
-blk_edges = np.r_[blk, blk[-1] + np.median(np.diff(blk))]
+sk_centre = sky.index_map["freq"]["centre"][:] #@me(67) List of 67 frequencies from 401-797 (MHz)
+sk_width = sky.index_map["freq"]["width"][:] #@me(67) Frequency separation: 6 (MHz) between every channel. 
+blk = np.asarray(sky.index_map["block"][:], dtype=float) #@me (24) RA at the start of each block (RA divided into 24 blocks) 
+blk_edges = np.r_[blk, blk[-1] + np.median(np.diff(blk))] 
+
+#@me std of residual = kappa * unfiltered visibility, kappa_coh is common in all parts of the 6MHz band (all frequencies brightening by same factor)
 k2 = sky.datasets["kappa2_coh_block"][:, 0, :]  # [band, block], 22 m
 k2w = sky.datasets["kappa2_coh_block_weight"][:, 0, :]
-kappa = np.where(k2w > 0, np.sqrt(np.clip(k2, 0, None)), np.nan)
+#@me Replaces zero weight with nan, where there's nonzero weight, calculate sqrt(kappa_coh^2)=kappa_coh
+kappa = np.where(k2w > 0, np.sqrt(np.clip(k2, 0, None)), np.nan) #@me (67, 24) -> (freq, RA). 
 
 # The sub-bands, from the band groups file (only the small datasets)
 with h5py.File(run_file("full", "transient_band_groups_x0"), "r") as f:
