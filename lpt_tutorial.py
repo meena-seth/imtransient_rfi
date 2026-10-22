@@ -1,13 +1,13 @@
 #@me SETTINGS =========================
-LSD = 3035
+LSD = 2418
 
 # On fir the files are under /scratch/ssiegel/chime/lpt/lsq_mfilt.  On a laptop,
 # point this at the folder you downloaded them into (see "Where the files are").
 DATA_ROOT = "/mnt/scratch/mseth/chime_data/n2_j1634/"
 # Runs from before the noise option have no suffix.  Newer runs end in "_thermal"
 # (thermal noise only) or "_sky" (with the noise that scales with the sky).
-RUN_SUBDIR = "band_full/mask_{mask}/fir513_ew22_native"
-MASKS = ["none", "full"]
+RUN_SUBDIR = "band_full/mask_{mask}/fir513_ew22_native_sky"
+MASKS = ["full"]
 
 # Time of the J1634+44 pulse on each day (UTC), from the CHIME/Pulsar detections.
 # On a day that is not listed here, the J1634+44 section is skipped.
@@ -125,7 +125,6 @@ snr = {m: cand[m].snr[:].local_array[0] for m in MASKS}
 weight = {m: cand[m].weight[:].local_array[0] for m in MASKS}
 best = {m: {k: cand[m].datasets[k][:].local_array[0] for k in ("amplitude", "x_index")} for m in MASKS}
 
-pdb.set_trace()
 #@me THE NOISE IN mJY =========================
 
 fig, ax = plt.subplots(figsize=(10, 4))
@@ -171,8 +170,6 @@ for k, (ax, ip) in enumerate(zip(axes, range(ns.scale.shape[0]))):
     plt.colorbar(im, ax=ax, pad=0.01, label="measured / expected\nnoise variance")
 axes[-1].set_xlabel("frequency [MHz]")
 plt.tight_layout()
-
-pdb.set_trace()
 
 #@me WHERE THE BRIGHT SOURCES ARE =========================
 
@@ -345,15 +342,9 @@ def two_maps(imgs, titles, **kw):
         plt.colorbar(im, ax=ax, pad=0.01, label="S/N")
     plt.tight_layout()
 
-
 masked = {m: np.where(weight[m] > 0, snr[m], np.nan) for m in MASKS}
 two_maps([masked[m] for m in MASKS], [f"LSD {LSD}, mask = {m}" for m in MASKS], vmin=1, vmax=1000, log=True)
-
-pdb.set_trace()
-
 two_maps([masked[m] for m in MASKS], [f"LSD {LSD}, mask = {m}" for m in MASKS], vmin=0, vmax=8)
-
-pdb.set_trace()
 
 fig, ax = plt.subplots(figsize=(8, 4))
 bins = np.logspace(0, 4, 161)
@@ -365,7 +356,6 @@ for m in MASKS:
     v = snr[m][weight[m] > 0]
     print(f"mask = {m}: valid fraction {np.mean(weight[m] > 0):.3f}, above 8: {np.mean(v > 8):.4f}, above 12: {np.mean(v > 12):.4f}")
 
-pdb.set_trace()
 #@me HOW IT DEPENDS ON FREQUENCY =========================
 
 groups = {m: containers.TransientBandGroupMap.from_file(run_file(m, "transient_band_groups_maxx"), distributed=True) for m in MASKS}
@@ -377,11 +367,13 @@ for name, dset in g.datasets.items():
 centre = g.index_map["freq"]["centre"][:]
 width = g.index_map["freq"]["width"][:]
 group_range = {}
+bandwidths = []
 for k, name in enumerate(g.index_map["group"]):
     used = g.datasets["band_used"][k]
     group_range[str(name)] = ((centre - width / 2)[used].min(), (centre + width / 2)[used].max())
+    bandwidths.append(used.sum())
     print(f"    {name:8s}: {used.sum():2d} bands, {group_range[str(name)][0]:.0f}-{group_range[str(name)][1]:.0f} MHz")
-
+bandwidths = np.array(bandwidths)
 # Keep the axes of the group maps (they should be the same as the candidate map)
 g_el = g.index_map["el"][:]
 g_ra = g.ra[:]
@@ -526,15 +518,26 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
         spec = esnr[mm][:, eg, tg]
         ok = spec != 0
         ax.errorbar(e_centre[ok], spec[ok], xerr=e_width[ok] / 2, yerr=1, fmt="none", color="0.6", lw=0.8)
-    subs = [n for n in gsnr[mm] if n != "all"]
-    lo = np.array([group_range[n][0] for n in subs])
-    hi = np.array([group_range[n][1] for n in subs])
-    val = np.array([gsnr[mm][n][eg, tg] for n in subs])
+    subs = [n for n in gsnr[mm] if n != "all"] #@me list of band names (e.g. 'all', 'TVA', etc)
+    lo = np.array([group_range[n][0] for n in subs]) #@me lowest freq in that band 
+    hi = np.array([group_range[n][1] for n in subs]) #@me highest freq in that band
+    val = np.array([gsnr[mm][n][eg, tg] for n in subs]) #@me SNR in that band at the given pixel 
     ok = val != 0
+    scaled = val / np.sqrt(bandwidths[1:] / 67)   
+    val_median= np.median(scaled[val != 0])         
+    #@me Adding errorbars to indicate the bandwidth of the measurement
     ax.errorbar(0.5 * (lo + hi)[ok], val[ok], xerr=0.5 * (hi - lo)[ok], yerr=1, fmt="o", ms=4, label=label, **kw)
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
 
+def median_snr(eg, tg, mm, label=None, **kw):
+    """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
+    subs = [n for n in gsnr[mm] if n != "all"] #@me list of band names (e.g. 'all', 'TVA', etc)
+    val = np.array([gsnr[mm][n][eg, tg] for n in subs]) #@me SNR in that band at the given pixel 
+    scaled = val / np.sqrt(bandwidths[1:] / 67)   
+    med_val = np.median(scaled[val != 0])         
+    print(f"Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}")
+    return med_val 
 
 def edge_marks(ax, r, y):
     """Mark a position with small triangles outside the frame, so the source itself stays visible."""
@@ -615,9 +618,25 @@ if HAVE_J1634 and HAVE_MFILT_BANDS:
 
 #@me OTHER BRIGHT CANDIDATES =========================
 
+def median_map(mm, chunk=100):
+    """Median over the sub-bands of the S/N rescaled to all bands, at every pixel."""
+    subs = [n for n in gsnr[mm] if n != "all"]
+    scale = np.sqrt(bandwidths[1:] / 67)[:, None, None]  # (9, 1, 1), lines up with the stack
+    n_el, n_ra = gsnr[mm]["all"].shape
+    out = np.full((n_el, n_ra), np.nan, dtype=np.float32)
+    for i0 in range(0, n_el, chunk):
+        sl = slice(i0, i0 + chunk)
+        stack = np.stack([gsnr[mm][n][sl] for n in subs])         # (9, chunk, ra)
+        stack = np.where(stack != 0, stack / scale, np.nan)       # rescale, 0 = no data
+        out[sl] = np.nanmedian(stack, axis=0)                     # median over the sub-bands
+    return out
+
+
+med = {m: median_map(m) for m in MASKS}
+snr_clean = {m: np.where(np.isfinite(med[m]), np.minimum(gsnr[m]["all"], med[m]), gsnr[m]["all"]) for m in MASKS}
+
 TRACKS = {"Sun": 0.03, "Cyg A": 0.02, "Cas A": 0.02}  # half-width in telescope-y
 SUN_RA_WIDTH = 20.0  # degrees either side of the Sun's transit, masked at every telescope-y
-
 
 def track(name, ra_axis):
     """Telescope-y of a source at each start time, and whether it is above the horizon."""
@@ -637,11 +656,13 @@ track_mask |= (np.abs(((g_ra - src_pos["Sun"][0] + 180) % 360) - 180) < SUN_RA_W
 print(f"fraction of the map masked: {track_mask.mean():.3f}")
 
 fig, ax = plt.subplots(figsize=(16, 5.5))
-im = plot_map(ax, np.where(track_mask, np.nan, gsnr["full"]["all"]),
+im = plot_map(ax, np.where(track_mask, np.nan, snr_clean['full']),
               "all bands, mask = full, with the tracks of the Sun, Cyg A and Cas A removed (white)",
-              vmin=0, vmax=8, ra_axis=g_ra, el_axis=g_el)
+              vmin=0, vmax=1000, log=True, ra_axis=g_ra, el_axis=g_el)
 plt.colorbar(im, ax=ax, pad=0.01, label="S/N")
+plt.savefig('median_snrmap_log.png')
 
+pdb.set_trace()
 CAND_GROUP = "all"
 # Candidates within this many degrees of RA of the transit of the Sun, Cas A or Cyg A
 # are tagged at any telescope-y: their residuals spread over many rows
@@ -733,7 +754,7 @@ def candidate_table(mm, name, found):
 
 
 m = "full"
-cmap_ = gsnr[m][CAND_GROUP]
+cmap_ = snr_clean[m]
 valid = (cmap_ != 0) & ~track_mask
 frac6 = np.sum(valid & (cmap_ > 6), axis=0) / np.maximum(valid.sum(axis=0), 1)
 peaks = find_peaks(cmap_, valid, 100, g_ra, g_el)
@@ -745,7 +766,7 @@ display(table.head(20).fillna(""))
 print("the 10 brightest not near a transit of the Sun, Cas A, Cyg A or a catalogue source, or J1634+44:")
 display(untagged.head(10).fillna(""))
 
-PICK = list(untagged.index[:3])
+PICK = list(untagged.index[:20])
 
 
 def show_candidate(k, mm="full", half_ra_deg=15.0, half_el=0.2):
@@ -782,8 +803,9 @@ def show_candidate(k, mm="full", half_ra_deg=15.0, half_el=0.2):
     plt.tight_layout()
 
     band_panels(e, t, mm, f"#{k}: all bands and each sub-band")
-    plt.show()
+    plt.savefig(f"Candidate_{k}_et_{peaks[k]}.png")
 
 
 for k in PICK:
     show_candidate(k)
+pdb.set_trace()
