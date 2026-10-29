@@ -5,6 +5,7 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 from caput.astro.skyfield import skyfield_wrapper
 from ch_ephem import sources
 from ch_ephem.observers import chime
@@ -502,19 +503,50 @@ print(f"{CAND_GROUP}, mask = {m}, without the bright-source tracks, the 20 brigh
 #@me CLOSER LOOK AT TOP CANDIDATES ================
 PICK = list(untagged.index[:10])
 
-def check_scintillation(idx, threshold=2):
+def check_scintillation(idx, threshold=2, method2=True, method1=False, method3=False):
     e, t = peaks[idx]
     mediansnr = median_snr(e, t, 'full')
     image, center_snr = panel_data(e, t)
-    window = 4 
+    
+    w = 5 
     medians = np.nanmedian(image, axis=1) #Median for every row
-    center_median = np.nansum(medians[25-window:25+window]) #Median for the 8 rows in middle of image
-    if np.nansum(medians[0:5])*threshold <= center_median:
-        print("maybe scintillation?")
-        return True
+    sums = sliding_window_view(medians, w).sum(axis=1)   # shape (47,)
+    center_median = np.nansum(medians[25-4:25+4]) #Median for the 8 rows in middle of image
+
+    if np.nanmax(sums) > center_median:
+        ref = np.nanmax(sums)
     else:
-        print("probably not scintillation")
-        return False
+        ref = center_median    
+
+    if np.nanmin(sums)*threshold < np.nansum(medians[0:5])*threshold:
+        noiseref = np.nanmin(sums)*threshold
+    else:
+        noiseref =  np.nansum(medians[0:5])*threshold
+
+    if method2:
+        if noiseref < ref:
+            print("maybe scintillation?")
+            return True
+        else:
+            print("probably not scintillation?")
+            return False
+
+    elif method1: #Do a sliding window sum and pick the minimum
+        if np.nanmin(sums)*threshold <= ref:
+            print("maybe scintillation?")
+            return True
+        else:
+            print("probably not scintillation?")
+            return False
+
+    elif method3: #Do a sum of the first 5 and pick the minimum
+        center_median = ref
+        if np.nansum(medians[0:5])*threshold <= center_median:
+            print("maybe scintillation?")
+            return True
+        else:
+            print("probably not scintillation")
+            return False
 
 def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     e, t = peaks[k]
@@ -646,5 +678,8 @@ style = """
 """
 
 html = style + "".join(parts)
-HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_not_scintillation.pdf")
+HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_not_scintillation2.pdf")
 pdb.set_trace()
+
+for k in PICK:
+    show_candidate(k)
