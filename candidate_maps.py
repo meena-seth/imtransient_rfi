@@ -518,10 +518,7 @@ def check_scintillation(idx, threshold=2.3, margin=0.95):
     else:
         ref = center_median    
 
-    if np.nanmin(sums)*threshold < np.nansum(medians[0:5])*threshold:
-        noiseref = np.nanmin(sums)*threshold
-    else:
-        noiseref =  np.nansum(medians[0:5])*threshold
+    noiseref = np.nanmin(sums)*threshold
 
     if (noiseref/ref) < margin:
         print("maybe scintillation?")
@@ -594,10 +591,9 @@ if check_count:
     print(f"{len(untagged)} total untagged candidates")
     print(f"{scintillation_count} could be scintillation")
 
+
 scintillation = table[(table["scintillation?"] == True) & (table["catalogue source"] == "") & (table["near transit of"] == "")]
 not_scintillation = table[(table["scintillation?"] == False) & (table["catalogue source"] == "") & (table["near transit of"] == "")]
-
-PICK = list(not_scintillation.index[:50])
 
 show_candidates = False
 if show_candidates:
@@ -624,8 +620,10 @@ for f,label in zip(SKY_MAPS, MAP_LABELS):
 
 parts.append(PAGE_BREAK)
 parts.append(f"<h1>{len(untagged)} candidates found</h1>")
+if check_count:
+    parts.append(f"of candidates identified, {scintillation_count} may be scintillation")
 
-# Candidate pages
+# Top 10 Candidates
 for i, k in enumerate(PICK):
     e, t = peaks[k]
     parts.append(f"<h2>Candidate #{k}</h2>")
@@ -646,10 +644,8 @@ for i, k in enumerate(PICK):
     parts.append(open_figures_to_html())
 
     if (i + 1) % PER_PAGE == 0:
-        parts.append(PAGE_BREAK)
+        parts.append(PAGE_BREAK)     
 
-if check_count:
-    parts.append(f"of candidates identified, {scintillation_count} may be scintillation")
 style = """
 <style>
   @page { size: letter portrait; margin: 0.5cm; }
@@ -660,8 +656,64 @@ style = """
 """
 
 html = style + "".join(parts)
-HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_not_scintillation2.pdf")
-pdb.set_trace()
+HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_candidates.pdf")
 
-for k in PICK:
-    show_candidate(k)
+#@me SCINTILLATION DIAGNOSTIC PDF ===============
+parts2 = ["<h1>LSD %d Scintillation Diagnostics</h1>" % LSD]
+
+#Check the first 50 identified as scintillation
+
+MAKE_SCINTILLATION_DIAGNOSTIC = True
+if MAKE_SCINTILLATION_DIAGNOSTIC:
+    PICK = list(scintillation.index[:30])
+    parts2.append(f"<h2>First 30 untagged candidates labeled as scintillation</h2>")
+
+    for i, k in enumerate(PICK):
+        e, t = peaks[k]
+        parts2.append(f"<h2>Candidate #{k}</h2>")
+
+        show_candidate(k)
+
+        view = table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any')
+        parts2.append(view.to_html())
+
+        mm="full"
+        row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
+        row["median"] = [float(median_snr(e, t, 'full'))]
+        row["kept"] = [float(snr_clean['full'][e, t])]
+
+        sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
+        parts2.append(sub.to_html())
+
+        parts2.append(open_figures_to_html())
+
+        if (i + 1) % PER_PAGE == 0:
+            parts2.append(PAGE_BREAK)     
+
+    #Check the first 50 identified as not scintillation 
+    parts2.append(f"<h2>First 30 untagged candidates labeled as not scintillation</h2>")
+    PICK = list(not_scintillation.index[:30])
+    for i, k in enumerate(PICK):
+        e, t = peaks[k]
+        parts2.append(f"<h2>Candidate #{k}</h2>")
+
+        show_candidate(k)
+
+        view = table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any')
+        parts2.append(view.to_html())
+
+        mm="full"
+        row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
+        row["median"] = [float(median_snr(e, t, 'full'))]
+        row["kept"] = [float(snr_clean['full'][e, t])]
+
+        sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
+        parts2.append(sub.to_html())
+
+        parts2.append(open_figures_to_html())
+
+        if (i + 1) % PER_PAGE == 0:
+            parts2.append(PAGE_BREAK) 
+
+    html = style + "".join(parts2)
+    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_scintillation_diagnostic.pdf")
