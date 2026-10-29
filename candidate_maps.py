@@ -580,6 +580,11 @@ if check_count:
     print(f"{len(untagged)} total untagged candidates")
     print(f"{scintillation_count} could be scintillation")
 
+scintillation = table[(table["scintillation?"] == True) & (table["catalogue source"] == "")]
+not_scintillation = table[(table["scintillation?"] == False) & (table["catalogue source"] == "")]
+
+PICK = list(not_scintillation.index[:50])
+
 show_candidates = False
 if show_candidates:
     for k in PICK:
@@ -641,5 +646,5 @@ style = """
 """
 
 html = style + "".join(parts)
-HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_candidates.pdf")
+HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_not_scintillation.pdf")
 pdb.set_trace()
