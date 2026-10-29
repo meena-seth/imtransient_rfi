@@ -12,6 +12,7 @@ from IPython.display import display
 from matplotlib.colors import LogNorm
 import base64
 import io
+import pdb
 from weasyprint import HTML
 from ch_pipeline.core import containers
 
@@ -37,7 +38,7 @@ Alter LSD to look at a different day.
 '''
 
 OUT_DIR = "/mnt/scratch/mseth/imtransient_rfi/"
-LSD = 3915
+LSD = 2418
 DATA_ROOT = "/mnt/scratch/mseth/chime_data/n2_j1634/"
 RUN_SUBDIR = "band_full/mask_full/fir513_ew22_native"
 MASKS = ["none", "full"]
@@ -241,7 +242,7 @@ except Exception as E:
     RUN_SUBDIR = RUN_SUBDIR.replace("_sky","").strip()
     run_dirs = {m: os.path.join(DATA_ROOT, str(LSD), RUN_SUBDIR.format(mask=m)) for m in MASKS}
     SKY_NOISE_CORRECTED = False
-    print(Exception)
+    print(E)
 
 #@me LOADING IN FREQ-DEPENDENT DATA ==============
 groups = {m: containers.TransientBandGroupMap.from_file(run_file(m, "transient_band_groups_maxx", run_dirs), distributed=True) for m in MASKS}
@@ -291,7 +292,8 @@ def median_snr(eg, tg, mm, label=None, **kw):
     val = np.array([gsnr[mm][n][eg, tg] for n in subs]) #@me SNR in that band at the given pixel 
     #scaled = val / np.sqrt(bandwidths[1:] / 67)   
     #med_val = np.median(scaled[val != 0])     
-    med_val = np.nanmedian(val)    
+    med_val = np.sqrt(len(subs)) * np.median(val[val != 0])
+    parts.append(f"Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}")
     print(f"Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}")
     return med_val 
 
@@ -306,6 +308,16 @@ def edge_marks(ax, r, y):
     ax.plot(x1, y, "<", **kw)
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
+
+def panel_data(eg, tg, mm="full", half_el=25, half_ra=40):
+    '''
+    Gets the data around the max point (same as in band_panels) but just returns the array. 
+    '''
+    se = slice(max(eg - half_el, 0), min(eg + half_el + 1, g_el.size))
+    st = slice(max(tg - half_ra, 0), min(tg + half_ra + 1, g_ra.size))
+    img = snr_clean['full'][se, st] #@me Have to alter this to work even if I don't do snr_clean?
+    center_snr = img[half_el, half_ra] #SNR of image center, i.e. the identified peak
+    return img, center_snr
 
 
 def band_panels(eg, tg, mm, title, half_el=25, half_ra=40):
@@ -345,9 +357,9 @@ def median_map(mm, chunk=100):
     out = np.full((n_el, n_ra), np.nan, dtype=np.float32)
     for i0 in range(0, n_el, chunk):
         sl = slice(i0, i0 + chunk)
-        stack = np.stack([gsnr[mm][n][sl] for n in subs])         # (9, chunk, ra)
-        stack = np.where(stack != 0, stack / scale, np.nan)       # rescale, 0 = no data
-        out[sl] = np.nanmedian(stack, axis=0)                     # median over the sub-bands
+        stack = np.stack([gsnr[mm][n][sl] for n in subs])          # (9, chunk, ra), raw S/N
+        stack = np.where(stack != 0, stack, np.nan)                # 0 = no data
+        out[sl] = np.sqrt(len(subs)) * np.nanmedian(stack, axis=0) # one common factor, sqrt(9) = 3
     return out
 
 med = {m: median_map(m) for m in MASKS}
@@ -449,7 +461,7 @@ def candidate_table(mm, name, found):
         ix = gxi[mm][name][e, t]
         r, y = g_ra[t], g_el[e]
         row = {
-            "S/N": float(gsnr[mm][name][e, t]),
+            "S/N": float(snr_clean[mm][e, t]),
             "telescope-y": y,
             "telescope-x": g_x[ix],
             "RA start": r,
@@ -461,7 +473,7 @@ def candidate_table(mm, name, found):
             ec, tc = int(np.argmin(np.abs(el - y))), int(np.argmin(np.abs(ra - r)))
             row["amp [Jy]"] = float(best[mm]["amplitude"][ec, tc])
         row["y frac"] = frac6[t]
-        row["sub-bands > 5"] = sum(int(gsnr[mm][n][e, t] > 5) for n in gsnr[mm] if n != "all")
+        row["sub-bands > 5"] = sum(int(snr_clean[mm][e, t] > 5) for n in snr_clean[mm])
         row["near transit of"] = near_tag(r, y)
         c_ = cat_match(r, y)
         row["catalogue source"] = c_[0] if c_ else ""
@@ -481,7 +493,7 @@ else:
 
 valid = (cmap_ != 0) & ~track_mask
 frac6 = np.sum(valid & (cmap_ > 6), axis=0) / np.maximum(valid.sum(axis=0), 1)
-peaks = find_peaks(cmap_, valid, 100, g_ra, g_el)
+peaks = find_peaks(cmap_, valid, 1000, g_ra, g_el)
 table = candidate_table(m, CAND_GROUP, peaks)
 untagged = table[(table["near transit of"] == "") & (table["catalogue source"] == "")]
 
@@ -489,13 +501,35 @@ print(f"{CAND_GROUP}, mask = {m}, without the bright-source tracks, the 20 brigh
 
 #@me CLOSER LOOK AT TOP CANDIDATES ================
 PICK = list(untagged.index[:10])
- 
+
+def check_scintillation(idx, threshold=2):
+    e, t = peaks[idx]
+    mediansnr = median_snr(e, t, 'full')
+    image, center_snr = panel_data(e, t)
+    window = 4 
+    medians = np.nanmedian(image, axis=1) #Median for every row
+    center_median = np.nansum(medians[25-window:25+window]) #Median for the 8 rows in middle of image
+    if np.nansum(medians[0:5])*threshold <= center_median:
+        print("maybe scintillation?")
+        parts.append("maybe scintillation?")
+        SCINTILLATION = True
+    else:
+        print("probably not scintillation")
+        parts.append("probably not scintillation?")   
+        SCINTILLATION=False 
+    return SCINTILLATION
+
 def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     e, t = peaks[k]
     r0, y0 = g_ra[t], g_el[e]
-    mediansnr = median_snr(e, t, 'full')
+    check_scintillation(k)
+    
     display(table.loc[[k]].fillna(""))
-    display(pd.DataFrame({n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}, index=["S/N in each sub-band"]).round(1))
+    row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
+    row["clean"] = [float(snr_clean[mm][e, t])]
+    display(pd.DataFrame(row, index=["S/N"]).round(1))
+
+    #display(pd.DataFrame({n: [float(snr_clean[mm][e, t])] for n in snr_clean[mm]}, index=["S/N in each sub-band"]).round(1))
 
     # Where it is in the whole day
     fig, ax = plt.subplots(figsize=(16, 4))
@@ -507,7 +541,7 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     st = (g_ra > r0 - half_ra_deg) & (g_ra < r0 + half_ra_deg)
     se = (g_el > y0 - half_el) & (g_el < y0 + half_el)
     fig, ax = plt.subplots(1, 3, figsize=(16, 4), gridspec_kw={"width_ratios": [1.4, 1, 1]})
-    plot_map(ax[0], cmap_[np.ix_(se, st)], f"#{k}, {CAND_GROUP}", vmin=0, vmax=max(8, gsnr[mm][CAND_GROUP][e, t] / 3),
+    plot_map(ax[0], cmap_[np.ix_(se, st)], f"#{k}, {CAND_GROUP}", vmin=0, vmax=max(8, snr_clean[mm][e, t] / 3),
              ra_axis=g_ra[st], el_axis=g_el[se], marks_on=False)
     ax[0].plot(r0, y0, "o", mfc="none", mec="r", ms=18, mew=1.5)
     for c_ in catalog:
@@ -527,8 +561,27 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     band_panels(e, t, mm, f"#{k}: all bands and each sub-band")
     return fig, ax
 
-#for k in PICK:
-    #show_candidate(k)
+
+#@me PLAYING AROUND =============
+check_count=False
+if check_count:
+    scintillation_count=0
+    for k in list(untagged.index[:]):
+        condition = check_scintillation(k)
+        if condition==True:
+            scintillation_count+=1
+        else:
+            continue
+
+    print(f"{len(untagged)} total untagged candidates")
+    print(f"{scintillation_count} could be scintillation")
+
+    pdb.set_trace()
+
+show_candidates = False
+if show_candidates:
+    for k in PICK:
+        show_candidate(k)
 
 #@me SAVING FIGS TO PDF =========
 PAGE_BREAK = '<div style="break-after: page"></div>'
@@ -549,22 +602,28 @@ for f,label in zip(SKY_MAPS, MAP_LABELS):
     parts.append(fig_to_html(f))
 
 parts.append(PAGE_BREAK)
+parts.append(f"<h1>{len(untagged)} candidates found</h1>")
 
 # Candidate pages
 for i, k in enumerate(PICK):
     e, t = peaks[k]
     parts.append(f"<h2>Candidate #{k}</h2>")
     parts.append(table.loc[[k]].fillna("").to_html())
-    sub = pd.DataFrame({n: [float(gsnr["full"][n][e, t])] for n in gsnr["full"]},
-                       index=["S/N in each sub-band"]).round(1)
+
+    mm="full"
+    row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
+    row["clean"] = [float(snr_clean[mm][e, t])]
+    sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
     parts.append(sub.to_html())
 
-    show_candidate(k)               # with plt.show() removed inside it
+    show_candidate(k)
     parts.append(open_figures_to_html())
 
     if (i + 1) % PER_PAGE == 0:
         parts.append(PAGE_BREAK)
 
+if check_count:
+    parts.append(f"of candidates identified, {scintillation_count} may be scintillation")
 style = """
 <style>
   @page { size: letter portrait; margin: 0.5cm; }
@@ -576,3 +635,4 @@ style = """
 
 html = style + "".join(parts)
 HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_candidates.pdf")
+pdb.set_trace()
