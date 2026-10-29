@@ -503,7 +503,7 @@ print(f"{CAND_GROUP}, mask = {m}, without the bright-source tracks, the 20 brigh
 #@me CLOSER LOOK AT TOP CANDIDATES ================
 PICK = list(untagged.index[:10])
 
-def check_scintillation(idx, threshold=2, method2=True, method1=False, method3=False):
+def check_scintillation(idx, threshold=2.3, margin=0.95):
     e, t = peaks[idx]
     mediansnr = median_snr(e, t, 'full')
     image, center_snr = panel_data(e, t)
@@ -523,30 +523,12 @@ def check_scintillation(idx, threshold=2, method2=True, method1=False, method3=F
     else:
         noiseref =  np.nansum(medians[0:5])*threshold
 
-    if method2:
-        if noiseref < ref:
-            print("maybe scintillation?")
-            return True
-        else:
-            print("probably not scintillation?")
-            return False
-
-    elif method1: #Do a sliding window sum and pick the minimum
-        if np.nanmin(sums)*threshold <= ref:
-            print("maybe scintillation?")
-            return True
-        else:
-            print("probably not scintillation?")
-            return False
-
-    elif method3: #Do a sum of the first 5 and pick the minimum
-        center_median = ref
-        if np.nansum(medians[0:5])*threshold <= center_median:
-            print("maybe scintillation?")
-            return True
-        else:
-            print("probably not scintillation")
-            return False
+    if (noiseref/ref) < margin:
+        print("maybe scintillation?")
+        return True
+    else:
+        print("probably not scintillation?")
+        return False
 
 def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     e, t = peaks[k]
@@ -612,8 +594,8 @@ if check_count:
     print(f"{len(untagged)} total untagged candidates")
     print(f"{scintillation_count} could be scintillation")
 
-scintillation = table[(table["scintillation?"] == True) & (table["catalogue source"] == "")]
-not_scintillation = table[(table["scintillation?"] == False) & (table["catalogue source"] == "")]
+scintillation = table[(table["scintillation?"] == True) & (table["catalogue source"] == "") & (table["near transit of"] == "")]
+not_scintillation = table[(table["scintillation?"] == False) & (table["catalogue source"] == "") & (table["near transit of"] == "")]
 
 PICK = list(not_scintillation.index[:50])
 
