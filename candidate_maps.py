@@ -286,14 +286,15 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
 
-def median_snr(eg, tg, mm, label=None, **kw):
+def median_snr(eg, tg, mm, label=None, printinpdf=True, **kw):
     """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
     subs = [n for n in gsnr[mm] if n != "all"] #@me list of band names (e.g. 'all', 'TVA', etc)
     val = np.array([gsnr[mm][n][eg, tg] for n in subs]) #@me SNR in that band at the given pixel 
     #scaled = val / np.sqrt(bandwidths[1:] / 67)   
     #med_val = np.median(scaled[val != 0])     
     med_val = np.sqrt(len(subs)) * np.median(val[val != 0])
-    parts.append(f"Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}")
+    if printinpdf:
+        parts.append(f"<h5>Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}</h5>")
     print(f"Median SNR across {len(subs)} bands: {med_val:.2f}; SNR for all bands combined: {gsnr[mm]['all'][eg, tg]:.2f}")
     return med_val 
 
@@ -495,6 +496,7 @@ valid = (cmap_ != 0) & ~track_mask
 frac6 = np.sum(valid & (cmap_ > 6), axis=0) / np.maximum(valid.sum(axis=0), 1)
 peaks = find_peaks(cmap_, valid, 1000, g_ra, g_el)
 table = candidate_table(m, CAND_GROUP, peaks)
+table['scintillation?'] = 'False' #Initiate tag for candidates identified as scintillation
 untagged = table[(table["near transit of"] == "") & (table["catalogue source"] == "")]
 
 print(f"{CAND_GROUP}, mask = {m}, without the bright-source tracks, the 20 brightest:")
@@ -502,31 +504,38 @@ print(f"{CAND_GROUP}, mask = {m}, without the bright-source tracks, the 20 brigh
 #@me CLOSER LOOK AT TOP CANDIDATES ================
 PICK = list(untagged.index[:10])
 
-def check_scintillation(idx, threshold=2):
+def check_scintillation(idx, printinpdf, threshold=2):
     e, t = peaks[idx]
-    mediansnr = median_snr(e, t, 'full')
+    mediansnr = median_snr(e, t, 'full', printinpdf)
     image, center_snr = panel_data(e, t)
     window = 4 
     medians = np.nanmedian(image, axis=1) #Median for every row
     center_median = np.nansum(medians[25-window:25+window]) #Median for the 8 rows in middle of image
     if np.nansum(medians[0:5])*threshold <= center_median:
-        print("maybe scintillation?")
-        parts.append("maybe scintillation?")
         SCINTILLATION = True
+        print("maybe scintillation?")
+        if printinpdf:
+            parts.append("<h5>maybe scintillation?</h5>")
     else:
         print("probably not scintillation")
-        parts.append("probably not scintillation?")   
-        SCINTILLATION=False 
+        SCINTILLATION = False
+        if printinpdf:
+            parts.append("<h5>probably not scintillation</h5>")   
     return SCINTILLATION
 
-def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
+def show_candidate(k, printinpdf=True, mm="full", half_ra_deg=20.0, half_el=0.2):
     e, t = peaks[k]
     r0, y0 = g_ra[t], g_el[e]
-    check_scintillation(k)
-    
-    display(table.loc[[k]].fillna(""))
+
+    condition = check_scintillation(k, printinpdf)
+    #if condition: 
+        #table.at(k, 'scintillation?') = 'True'
+
+    display(table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any'))
+    #display(table.loc[[k]].fillna("").dropna(how="all", axis=1))
     row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
     row["clean"] = [float(snr_clean[mm][e, t])]
+
     display(pd.DataFrame(row, index=["S/N"]).round(1))
 
     #display(pd.DataFrame({n: [float(snr_clean[mm][e, t])] for n in snr_clean[mm]}, index=["S/N in each sub-band"]).round(1))
@@ -563,11 +572,11 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
 
 
 #@me PLAYING AROUND =============
-check_count=False
+check_count=True
 if check_count:
     scintillation_count=0
     for k in list(untagged.index[:]):
-        condition = check_scintillation(k)
+        condition = check_scintillation(k, printinpdf=False)
         if condition==True:
             scintillation_count+=1
         else:
@@ -576,12 +585,10 @@ if check_count:
     print(f"{len(untagged)} total untagged candidates")
     print(f"{scintillation_count} could be scintillation")
 
-    pdb.set_trace()
-
 show_candidates = False
 if show_candidates:
     for k in PICK:
-        show_candidate(k)
+        show_candidate(k, printinpdf=False)
 
 #@me SAVING FIGS TO PDF =========
 PAGE_BREAK = '<div style="break-after: page"></div>'
@@ -608,7 +615,9 @@ parts.append(f"<h1>{len(untagged)} candidates found</h1>")
 for i, k in enumerate(PICK):
     e, t = peaks[k]
     parts.append(f"<h2>Candidate #{k}</h2>")
-    parts.append(table.loc[[k]].fillna("").to_html())
+
+    view = table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any')
+    parts.append(view.to_html())
 
     mm="full"
     row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
@@ -616,7 +625,7 @@ for i, k in enumerate(PICK):
     sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
     parts.append(sub.to_html())
 
-    show_candidate(k)
+    show_candidate(k, printinpdf=False)
     parts.append(open_figures_to_html())
 
     if (i + 1) % PER_PAGE == 0:
