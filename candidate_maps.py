@@ -39,7 +39,7 @@ Alter LSD to look at a different day.
 '''
 
 OUT_DIR = "/mnt/scratch/mseth/imtransient_rfi/"
-LSD = 2418
+LSD = 3035
 DATA_ROOT = "/mnt/scratch/mseth/chime_data/n2_j1634/"
 RUN_SUBDIR = "band_full/mask_full/fir513_ew22_native"
 MASKS = ["none", "full"]
@@ -85,13 +85,20 @@ ra = c.ra[:]
 snr = {m: cand[m].snr[:].local_array[0] for m in MASKS}
 weight = {m: cand[m].weight[:].local_array[0] for m in MASKS}
 best = {m: {k: cand[m].datasets[k][:].local_array[0] for k in ("amplitude", "x_index")} for m in MASKS}
+dec = cand['full'].datasets['dec'][:, 1]
+x = c.index_map["x"][:]
+ha_map = c.datasets["ha"][:]
+dec_map = c.datasets["dec"][:]
 
 
 #@me CODE FOR MAPPING ==============
 # Coord transformations
-def ra_to_utc(r):
+def ra_to_utc(r, string=True):
     unix = chime.lsd_to_unix(LSD + r / 360.0)
-    return datetime.fromtimestamp(unix, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if string:
+        return datetime.fromtimestamp(unix, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        return datetime.fromtimestamp(unix, timezone.utc)
 
 def utc_to_ra(utc):
     unix = datetime.strptime(utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
@@ -102,6 +109,12 @@ def el_to_dec(y):
 
 def dec_to_el(d):
     return np.sin(np.radians(d) - LAT)
+
+utc=[]
+for r in ra:
+    u = ra_to_utc(r, string=False)
+    utc.append(u)
+utc = np.array(utc)
 
 #Identifying where bright sources are on the map
 SOURCES = {
@@ -180,7 +193,7 @@ def absmax_reduce(img, max_rows=600, max_cols=1600):
     return np.where(empty, np.nan, out)
 
 
-def plot_map(ax, img, title, vmin=0, vmax=10, log=False, ra_axis=ra, el_axis=el, marks_on=True, xlabel=True, 
+def plot_map(ax, img, title, vmin=0, vmax=10, log=False, ra_axis=ra, el_axis=dec, marks_on=False, xlabel=True, 
              cmap="viridis"):
     """Image of a map on (telescope-y, ra), with the bright sources and J1634+44 marked."""
     d = np.median(np.diff(ra_axis))
@@ -192,7 +205,7 @@ def plot_map(ax, img, title, vmin=0, vmax=10, log=False, ra_axis=ra, el_axis=el,
     )
     if marks_on:
         inside = (gp_ra >= ra_axis[0]) & (gp_ra <= ra_axis[-1])
-        ax.plot(np.where(inside, gp_ra, np.nan), gp_el, "w--", lw=0.8, alpha=0.7)
+        ax.plot(np.where(inside, gp_ra, np.nan), gp_dec, "w--", lw=0.8, alpha=0.7)
         for name, r, y in marks + [("J1634+44", ra_j, el_j)]:
             if ra_axis[0] <= r <= ra_axis[-1] and el_axis[0] <= y <= el_axis[-1]:
                 color = "r" if name == "J1634+44" else "w"
@@ -205,7 +218,7 @@ def plot_map(ax, img, title, vmin=0, vmax=10, log=False, ra_axis=ra, el_axis=el,
                     color=color, fontsize=11, fontweight="bold", va="top" if top else "center",
                     ha="right" if right else "left",
                 )
-    ax.set(ylabel="telescope-y", title=title, xlim=(ra_axis[0], ra_axis[-1] + d), ylim=(el_axis[0], el_axis[-1]))
+    ax.set(ylabel="Dec", title=title, xlim=(ra_axis[0], ra_axis[-1] + d), ylim=(el_axis[0], el_axis[-1]))
     ax.tick_params(labelbottom=True)
     if xlabel:
         ax.set_xlabel("RA at the start [deg]")
@@ -219,6 +232,7 @@ def two_maps(imgs, titles, **kw):
         im = plot_map(ax, img, title, xlabel=(k == len(imgs) - 1), **kw)
         plt.colorbar(im, ax=ax, pad=0.01, label="S/N")
     plt.tight_layout()
+    plt.savefig('test.png')
     return fig, axes
 
 
@@ -271,6 +285,14 @@ g_ha = g.datasets["ha"][:]  # [el, x]
 g_dec = g.datasets["dec"][:]
 
 #@me SPECTRUM PLOTTING FUNCTIONS ==================
+HAVE_EACH_BAND = all(os.path.exists(run_file(m, "transient_each_band_maxx")) for m in MASKS)
+if HAVE_EACH_BAND:
+    each = {m: containers.TransientBandGroupMap.from_file(run_file(m, "transient_each_band_maxx"), distributed=True)
+            for m in MASKS}
+    esnr = {m: each[m].snr[:].local_array[0] for m in MASKS}  # band, el, ra
+    e_centre = each["full"].index_map["freq"]["centre"][:]
+    e_width = each["full"].index_map["freq"]["width"][:]
+
 def at_group_pixel(e, t):
     """Indices in the group maps of a sample of the candidate map."""
     return int(np.argmin(np.abs(g_el - el[e]))), int(np.argmin(np.abs(g_ra - ra[t])))
@@ -278,6 +300,10 @@ def at_group_pixel(e, t):
 
 def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
+    if HAVE_EACH_BAND:
+        spec = esnr[mm][:, eg, tg]
+        ok = spec != 0
+        ax.errorbar(e_centre[ok], spec[ok], xerr=e_width[ok] / 2, yerr=1, fmt="none", color="0.6", lw=0.8)
     subs = [n for n in gsnr[mm] if n != "all"]
     lo = np.array([group_range[n][0] for n in subs])
     hi = np.array([group_range[n][1] for n in subs])
@@ -286,6 +312,19 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     ax.errorbar(0.5 * (lo + hi)[ok], val[ok], xerr=0.5 * (hi - lo)[ok], yerr=1, fmt="o", ms=4, label=label, **kw)
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
+
+def plot_ds(ax, eg, tg, mm, window=200, **kw):
+    if HAVE_EACH_BAND:
+        start_time = int(tg-window/2)
+        end_time = int(tg+window/2)
+        im = esnr[mm][:, eg, start_time:end_time]
+        ncols = im.shape[1]
+        ax.imshow(im, aspect='auto', origin='upper', extent=[-0.5, ncols - 0.5, e_centre[::13][0], e_centre[::13][-1]])
+        # todo ticks might not be precise + image is kinda stretched :/
+        ax.set_yticks(e_centre[::13])
+        ax.set(xlabel="Time", ylabel="Frequency (MHz)")
+    else:
+        print('HAVE_EACH_BAND=False. Unable to plot dynamic spectrum.')
 
 def median_snr(eg, tg, mm, label=None, **kw):
     """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
@@ -374,6 +413,57 @@ else:
     title = f"LSD {LSD} mask = {m}+narrowband mitigation?"
 
 fig3, ax3 = two_maps([masked[m] for m in MASKS], [title for m in MASKS], vmin=1, vmax=1000, log=True)
+
+#@me making dynamic spectra for j1634+44
+def zoom_index(e, t, half_el=40, half_ra=60, shape=None):
+    n_el, n_ra = shape if shape is not None else (el.size, ra.size)
+    return slice(max(e - half_el, 0), min(e + half_el + 1, n_el)), slice(max(t - half_ra, 0), min(t + half_ra + 1, n_ra))
+
+
+def describe(mm, e, t):
+    ix = best[mm]["x_index"][e, t]
+    return (
+        f"S/N {snr[mm][e, t]:6.1f}  amp {best[mm]['amplitude'][e, t]:6.2f} Jy  "
+        f"y {el[e]:+.3f}  x {x[ix]:+.4f}  RA start {ra[t]:.2f}  ({ra_to_utc(ra[t])} UTC)  "
+        f"src RA {(ra[t] - ha_map[e, ix]) % 360:.2f}  dec {dec_map[e, ix]:.1f}"
+    )
+
+#Plotting peak & image
+peak = {}
+if HAVE_J1634:
+    near = (np.abs(el - el_j) < 0.03)[:, None] & (np.abs(ra - ra_j) < 1.0)[None, :]
+    for m in MASKS:
+        e, t = np.unravel_index(np.argmax(np.where(near & (weight[m] > 0), snr[m], -np.inf)), snr[m].shape)
+        peak[m] = (e, t)
+        print(f"mask = {m:4s}: {describe(m, e, t)}")
+
+if HAVE_J1634:
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    for col, m in enumerate(MASKS):
+        e, t = peak[m]
+        se, st = zoom_index(e, t)
+        plot_map(axes[0, col], snr[m][se, st], f"J1634+44, mask = {m}", vmax=np.nanmax(snr[m][se, st]),
+                 ra_axis=ra[st], el_axis=el[se], marks_on=False)
+        axes[0, col].plot(ra[t], el[e], "r+", ms=14)
+        axes[1, col].plot(ra[st], snr[m][e, st], "k-", lw=1)
+        axes[1, col].set(xlabel="RA at the start [deg]", ylabel="best S/N", title=f"along telescope-y = {el[e]:+.3f}")
+    plt.tight_layout()
+    plt.savefig('j1634.png')
+
+#Plotting spectrum 
+if HAVE_J1634:
+    fig, ax = plt.subplots(figsize=(12, 4))
+    for k, m in enumerate(MASKS):
+        eg, tg = at_group_pixel(*peak[m])
+        plot_ds(ax, eg, tg, m)
+        plt.savefig('j1634_ds.png')
+        plot_spectrum(ax, eg, tg, m, color=f"C{k}", label=f"mask = {m}")
+        print(f"mask = {m:4s}: " + ", ".join(f"{n}: {gsnr[m][n][eg, tg]:5.1f}" for n in gsnr[m]))
+    ax.set_title(f"J1634+44 on LSD {LSD}, at the peak")
+    ax.legend()
+    plt.savefig('j1634_spectrum.png')
+    band_panels(*at_group_pixel(*peak["full"]), "full", "J1634+44, mask = full")
+    plt.savefig('j1634_bandpanels.png')
 
 #@me CANDIDATE SEARCHING FUNCTIONS =====================
 CAND_GROUP = "all"
@@ -526,6 +616,7 @@ def check_scintillation(idx, threshold=2.3, margin=0.95):
     else:
         print("probably not scintillation?")
         return False
+
 
 def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     e, t = peaks[k]
