@@ -313,16 +313,20 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
 
-def plot_ds(ax, eg, tg, mm, window=200, **kw):
+def plot_ds(ax, eg, tg, mm, title, window=200, **kw):
     if HAVE_EACH_BAND:
         start_time = int(tg-window/2)
         end_time = int(tg+window/2)
         im = esnr[mm][:, eg, start_time:end_time]
         ncols = im.shape[1]
-        ax.imshow(im, aspect='auto', origin='upper', extent=[-0.5, ncols - 0.5, e_centre[::13][0], e_centre[::13][-1]])
+        freqs = e_centre[::-1][::13]
+        ax.imshow(im, aspect='auto', origin='upper', extent=[-0.5, ncols - 0.5, freqs[0], freqs[-1]])
         # todo ticks might not be precise + image is kinda stretched :/
-        ax.set_yticks(e_centre[::13])
-        ax.set(xlabel="Time", ylabel="Frequency (MHz)")
+        ax.set_yticks(freqs)
+        # im = esnr[mm][:, eg, start_time:end_time]
+        # ax.imshow(im, aspect='auto')
+        ax.set(xlabel="Time (10s cadence)", ylabel="Frequency (400-800 MHz)")
+        ax.set_title(label=title)
     else:
         print('HAVE_EACH_BAND=False. Unable to plot dynamic spectrum.')
 
@@ -452,11 +456,12 @@ if HAVE_J1634:
 
 #Plotting spectrum 
 if HAVE_J1634:
-    fig, ax = plt.subplots(figsize=(12, 4))
+    fig, ax = plt.subplots()
     for k, m in enumerate(MASKS):
         eg, tg = at_group_pixel(*peak[m])
-        plot_ds(ax, eg, tg, m)
-        plt.savefig('j1634_ds.png')
+        plot_ds(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
+        plt.savefig('ds_labeled.png')
+        fig, ax = plt.subplots(figsize=(16, 4))
         plot_spectrum(ax, eg, tg, m, color=f"C{k}", label=f"mask = {m}")
         print(f"mask = {m:4s}: " + ", ".join(f"{n}: {gsnr[m][n][eg, tg]:5.1f}" for n in gsnr[m]))
     ax.set_title(f"J1634+44 on LSD {LSD}, at the peak")
@@ -637,10 +642,11 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     #display(pd.DataFrame({n: [float(snr_clean[mm][e, t])] for n in snr_clean[mm]}, index=["S/N in each sub-band"]).round(1))
 
     # Where it is in the whole day
-    fig, ax = plt.subplots(figsize=(16, 4))
-    plot_map(ax, np.where(track_mask, np.nan, cmap_), f"{CAND_GROUP}, mask = {mm}: #{k} (red circle)",
+    fig, ax = plt.subplots(1, 2, gridspec_kw={"width_ratios": [2, 1]}, figsize=(16, 4))
+    plot_map(ax[0], np.where(track_mask, np.nan, cmap_), f"{CAND_GROUP}, mask = {mm}: #{k} (red circle)",
              vmin=0, vmax=8, ra_axis=g_ra, el_axis=g_el)
-    ax.plot(r0, y0, "o", mfc="none", mec="r", ms=22, mew=2)
+    ax[1].plot(r0, y0, "o", mfc="none", mec="r", ms=22, mew=2)
+    plot_ds(ax[1], e, t, mm, f"Candidate {k}")
 
     # A wider view, with the catalogue sources that transit in it
     st = (g_ra > r0 - half_ra_deg) & (g_ra < r0 + half_ra_deg)
@@ -692,62 +698,65 @@ if show_candidates:
         show_candidate(k)
 
 #@me SAVING FIGS TO PDF =========
+#Configuring prefs for pdf 
 PAGE_BREAK = '<div style="break-after: page"></div>'
 PER_PAGE = 2
-
-parts = ["<h1>LSD %d candidates</h1>" % LSD]
-
-# Page 1: the sky maps
-if SKY_NOISE_CORRECTED:
-    MAP_LABELS = ["Basic Pipeline", "Sky Noise Corrected", "Sky Noise Corrected+RFI Mitigated"]
-    SKY_MAPS = [fig1, fig2, fig3]
-else:
-    MAP_LABELS = ["Basic Pipeline", "RFI Mitigated"]
-    SKY_MAPS = [fig1, fig3]
-
-for f,label in zip(SKY_MAPS, MAP_LABELS):
-    parts.append(f"<h2>{label}</h2>")
-    parts.append(fig_to_html(f))
-
-parts.append(PAGE_BREAK)
-parts.append(f"<h1>{len(untagged)} candidates found</h1>")
-if check_count:
-    parts.append(f"of candidates identified, {scintillation_count} may be scintillation")
-
-# Top 10 Candidates
-for i, k in enumerate(PICK):
-    e, t = peaks[k]
-    parts.append(f"<h2>Candidate #{k}</h2>")
-
-    show_candidate(k)
-
-    view = table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any')
-    parts.append(view.to_html())
-
-    mm="full"
-    row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
-    row["median"] = [float(median_snr(e, t, 'full'))]
-    row["kept"] = [float(snr_clean['full'][e, t])]
-
-    sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
-    parts.append(sub.to_html())
-
-    parts.append(open_figures_to_html())
-
-    if (i + 1) % PER_PAGE == 0:
-        parts.append(PAGE_BREAK)     
-
 style = """
-<style>
-  @page { size: letter portrait; margin: 0.5cm; }
-  table { font-size: 8px; border-collapse: collapse; }
-  td, th { padding: 2px 4px; }
-  img { width: 100%; }
-</style>
-"""
+    <style>
+    @page { size: letter portrait; margin: 0.5cm; }
+    table { font-size: 8px; border-collapse: collapse; }
+    td, th { padding: 2px 4px; }
+    img { width: 100%; }
+    </style>
+    """
 
-html = style + "".join(parts)
-HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_candidates.pdf")
+
+MAKE_SUMMARY = False
+if MAKE_SUMMARY: 
+    parts = ["<h1>LSD %d candidates</h1>" % LSD]
+
+    # Page 1: the sky maps
+    if SKY_NOISE_CORRECTED:
+        MAP_LABELS = ["Basic Pipeline", "Sky Noise Corrected", "Sky Noise Corrected+RFI Mitigated"]
+        SKY_MAPS = [fig1, fig2, fig3]
+    else:
+        MAP_LABELS = ["Basic Pipeline", "RFI Mitigated"]
+        SKY_MAPS = [fig1, fig3]
+
+    for f,label in zip(SKY_MAPS, MAP_LABELS):
+        parts.append(f"<h2>{label}</h2>")
+        parts.append(fig_to_html(f))
+
+    parts.append(PAGE_BREAK)
+    parts.append(f"<h1>{len(untagged)} candidates found</h1>")
+    if check_count:
+        parts.append(f"of candidates identified, {scintillation_count} may be scintillation")
+
+    # Top 10 Candidates
+    for i, k in enumerate(PICK):
+        e, t = peaks[k]
+        parts.append(f"<h2>Candidate #{k}</h2>")
+
+        show_candidate(k)
+
+        view = table.loc[[k]].replace("", float(np.nan)).dropna(axis=1, how='any')
+        parts.append(view.to_html())
+
+        mm="full"
+        row = {n: [float(gsnr[mm][n][e, t])] for n in gsnr[mm]}
+        row["median"] = [float(median_snr(e, t, 'full'))]
+        row["kept"] = [float(snr_clean['full'][e, t])]
+
+        sub = pd.DataFrame(pd.DataFrame(row, index=["S/N"]).round(1))
+        parts.append(sub.to_html())
+
+        parts.append(open_figures_to_html())
+
+        if (i + 1) % PER_PAGE == 0:
+            parts.append(PAGE_BREAK)     
+
+    html = style + "".join(parts)
+    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_candidates.pdf")
 
 #@me SCINTILLATION DIAGNOSTIC PDF ===============
 parts2 = ["<h1>LSD %d Scintillation Diagnostics</h1>" % LSD]
@@ -757,7 +766,7 @@ parts2 = ["<h1>LSD %d Scintillation Diagnostics</h1>" % LSD]
 MAKE_SCINTILLATION_DIAGNOSTIC = True
 if MAKE_SCINTILLATION_DIAGNOSTIC:
     PICK = list(scintillation.index[:30])
-    parts2.append(f"<h2>First 30 untagged candidates labeled as scintillation</h2>")
+    parts2.append(f"<h2>Untagged candidates labeled as scintillation</h2>")
 
     for i, k in enumerate(PICK):
         e, t = peaks[k]
@@ -782,7 +791,7 @@ if MAKE_SCINTILLATION_DIAGNOSTIC:
             parts2.append(PAGE_BREAK)     
 
     #Check the first 50 identified as not scintillation 
-    parts2.append(f"<h2>First 30 untagged candidates labeled as not scintillation</h2>")
+    parts2.append(f"<h2>Untagged candidates labeled as not scintillation</h2>")
     PICK = list(not_scintillation.index[:30])
     for i, k in enumerate(PICK):
         e, t = peaks[k]
@@ -807,4 +816,4 @@ if MAKE_SCINTILLATION_DIAGNOSTIC:
             parts2.append(PAGE_BREAK) 
 
     html = style + "".join(parts2)
-    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_scintillation_diagnostic.pdf")
+    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_scintillation_diagnostic_wDS.pdf")
