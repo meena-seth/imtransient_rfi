@@ -313,22 +313,52 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
 
-def plot_ds(ax, eg, tg, mm, title, window=200, **kw):
+def plot_ds(ax, eg, tg, mm, title, window=120, **kw):
     if HAVE_EACH_BAND:
-        start_time = int(tg-window/2)
-        end_time = int(tg+window/2)
-        im = esnr[mm][:, eg, start_time:end_time]
+        start_idx = int(tg-window/2)
+        end_idx = int(tg+window/2)
+
+        times = np.round(g_ra[start_idx:end_idx], 2)
+
+        im = esnr[mm][:, eg, start_idx:end_idx]
+        im[14,:] = np.nan #Manually mask out what looked bad before
         ncols = im.shape[1]
         freqs = e_centre[::-1][::13]
-        ax.imshow(im, aspect='auto', origin='upper', extent=[-0.5, ncols - 0.5, freqs[0], freqs[-1]])
+        ax.imshow(im, aspect='auto', origin='upper', extent=[int(times[0]), int(times[-1]), freqs[0], freqs[-1]])
         # todo ticks might not be precise + image is kinda stretched :/
         ax.set_yticks(freqs)
+        ax.set_xticks(times[::25])
         # im = esnr[mm][:, eg, start_time:end_time]
         # ax.imshow(im, aspect='auto')
-        ax.set(xlabel="Time (10s cadence)", ylabel="Frequency (400-800 MHz)")
+        ax.set(xlabel="RA", ylabel="Frequency (MHz))")
         ax.set_title(label=title)
     else:
         print('HAVE_EACH_BAND=False. Unable to plot dynamic spectrum.')
+
+def sk(ax, eg, tg, mm, window=120, plot=True, **kw): 
+    if HAVE_EACH_BAND:
+        start_idx = int(tg-window/2)
+        end_idx = int(tg+window/2)
+        im = esnr[mm][:, eg, start_idx:end_idx]
+        im[14,:] = np.nan #Manually mask out what looked bad before
+
+        s1 = np.sum(im, axis=1)
+        s2 = np.sum(np.square(im), axis=1)
+        m = window
+        n = len(e_centre)
+
+        coeff = (m*n*2)/(m-3)
+        sk = coeff*(m*s2/np.square(s1) - 1)
+
+        if plot:
+            ax.plot(e_centre, sk, marker='o', markersize=2)
+            ax.set(xlabel='Freq(MHz)', ylabel='SK Parameter')
+            ax.set_title(f'SK Parameter for {window} time samples')
+
+        return sk
+            
+    else:
+        print('HAVE_EACH_BAND=False. Unable to calculate SK parameter.')
 
 def median_snr(eg, tg, mm, label=None, **kw):
     """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
@@ -390,6 +420,24 @@ def band_panels(eg, tg, mm, title, half_el=25, half_ra=40):
     fig.suptitle(title)
     return fig, axes
 
+def plot_img(ax, eg, tg, mm, title, half_el=25, half_ra=40):
+    '''
+    Same as band panels, just only doing 'all'
+    '''
+    se = slice(max(eg - half_el, 0), min(eg + half_el + 1, g_el.size))
+    st = slice(max(tg - half_ra, 0), min(tg + half_ra + 1, g_ra.size))
+    ext = [g_ra[st][0], g_ra[st][-1], g_el[se][0], g_el[se][-1]]
+    vmax = max(5.0, np.nanmax(gsnr[mm]["all"][se, st]))
+    lo, hi = group_range['all']
+    img = gsnr[mm]['all'][se, st]
+    im = ax.imshow(np.where(img != 0, img, np.nan), origin="lower", aspect="auto", interpolation="none",
+                    extent=ext, vmin=0, vmax=vmax)
+    edge_marks(ax, g_ra[tg], g_el[eg])
+    ax.set_title(f"'All' ({lo:.0f}-{hi:.0f} MHz)", fontsize=12)
+    ax.set(xlabel="RA at the start [deg]", ylabel="telescope-y")
+    fig.colorbar(im, ax=axes, pad=0.01, label="S/N (best x)")
+    ax.set_title(title)
+
 
 #@me NARROWBAND RFI MITIGATION & MAP  ============== 
 def median_map(mm, chunk=100):
@@ -434,41 +482,51 @@ def describe(mm, e, t):
 
 #Plotting peak & image
 peak = {}
-if HAVE_J1634:
-    near = (np.abs(el - el_j) < 0.03)[:, None] & (np.abs(ra - ra_j) < 1.0)[None, :]
-    for m in MASKS:
-        e, t = np.unravel_index(np.argmax(np.where(near & (weight[m] > 0), snr[m], -np.inf)), snr[m].shape)
-        peak[m] = (e, t)
-        print(f"mask = {m:4s}: {describe(m, e, t)}")
 
-if HAVE_J1634:
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-    for col, m in enumerate(MASKS):
-        e, t = peak[m]
-        se, st = zoom_index(e, t)
-        plot_map(axes[0, col], snr[m][se, st], f"J1634+44, mask = {m}", vmax=np.nanmax(snr[m][se, st]),
-                 ra_axis=ra[st], el_axis=el[se], marks_on=False)
-        axes[0, col].plot(ra[t], el[e], "r+", ms=14)
-        axes[1, col].plot(ra[st], snr[m][e, st], "k-", lw=1)
-        axes[1, col].set(xlabel="RA at the start [deg]", ylabel="best S/N", title=f"along telescope-y = {el[e]:+.3f}")
-    plt.tight_layout()
-    plt.savefig('j1634.png')
+PLOT_J1634 = True
+if PLOT_J1634:
+    if HAVE_J1634:
+        near = (np.abs(el - el_j) < 0.03)[:, None] & (np.abs(ra - ra_j) < 1.0)[None, :]
+        for m in MASKS:
+            e, t = np.unravel_index(np.argmax(np.where(near & (weight[m] > 0), snr[m], -np.inf)), snr[m].shape)
+            peak[m] = (e, t)
+            print(f"mask = {m:4s}: {describe(m, e, t)}")
 
-#Plotting spectrum 
-if HAVE_J1634:
-    fig, ax = plt.subplots()
-    for k, m in enumerate(MASKS):
-        eg, tg = at_group_pixel(*peak[m])
-        plot_ds(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
-        plt.savefig('ds_labeled.png')
-        fig, ax = plt.subplots(figsize=(16, 4))
-        plot_spectrum(ax, eg, tg, m, color=f"C{k}", label=f"mask = {m}")
-        print(f"mask = {m:4s}: " + ", ".join(f"{n}: {gsnr[m][n][eg, tg]:5.1f}" for n in gsnr[m]))
-    ax.set_title(f"J1634+44 on LSD {LSD}, at the peak")
-    ax.legend()
-    plt.savefig('j1634_spectrum.png')
-    band_panels(*at_group_pixel(*peak["full"]), "full", "J1634+44, mask = full")
-    plt.savefig('j1634_bandpanels.png')
+    if HAVE_J1634:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+        for col, m in enumerate(MASKS):
+            e, t = peak[m]
+            se, st = zoom_index(e, t)
+            plot_map(axes[0, col], snr[m][se, st], f"J1634+44, mask = {m}", vmax=np.nanmax(snr[m][se, st]),
+                    ra_axis=ra[st], el_axis=el[se], marks_on=False)
+            axes[0, col].plot(ra[t], el[e], "r+", ms=14)
+            axes[1, col].plot(ra[st], snr[m][e, st], "k-", lw=1)
+            axes[1, col].set(xlabel="RA at the start [deg]", ylabel="best S/N", title=f"along telescope-y = {el[e]:+.3f}")
+        plt.tight_layout()
+        plt.savefig('j1634.png')
+
+    #Plotting spectrum 
+    if HAVE_J1634:
+        fig, ax = plt.subplots()
+        for k, m in enumerate(MASKS):
+            eg, tg = at_group_pixel(*peak[m])
+            plot_img(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
+
+            plot_ds(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
+            plt.savefig('ds_masked413MHz.png')
+
+            fig, ax = plt.subplots()
+            sk_parameter = sk(ax, eg, tg, m)
+            plt.savefig('sk_masked413MHz.png')
+
+            fig, ax = plt.subplots(figsize=(16, 4))
+            plot_spectrum(ax, eg, tg, m, color=f"C{k}", label=f"mask = {m}")
+            print(f"mask = {m:4s}: " + ", ".join(f"{n}: {gsnr[m][n][eg, tg]:5.1f}" for n in gsnr[m]))
+        ax.set_title(f"J1634+44 on LSD {LSD}, at the peak")
+        ax.legend()
+        plt.savefig('j1634_spectrum.png')
+        band_panels(*at_group_pixel(*peak["full"]), "full", "J1634+44, mask = full")
+        plt.savefig('j1634_bandpanels.png')
 
 #@me CANDIDATE SEARCHING FUNCTIONS =====================
 CAND_GROUP = "all"
@@ -623,7 +681,7 @@ def check_scintillation(idx, threshold=2.3, margin=0.95):
         return False
 
 
-def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
+def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2, ds_and_sk=True):
     e, t = peaks[k]
     r0, y0 = g_ra[t], g_el[e]
 
@@ -642,11 +700,18 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     #display(pd.DataFrame({n: [float(snr_clean[mm][e, t])] for n in snr_clean[mm]}, index=["S/N in each sub-band"]).round(1))
 
     # Where it is in the whole day
-    fig, ax = plt.subplots(1, 2, gridspec_kw={"width_ratios": [2, 1]}, figsize=(16, 4))
-    plot_map(ax[0], np.where(track_mask, np.nan, cmap_), f"{CAND_GROUP}, mask = {mm}: #{k} (red circle)",
+    fig, ax = plt.subplots(figsize=(16, 4))
+    plot_map(ax, np.where(track_mask, np.nan, cmap_), f"{CAND_GROUP}, mask = {mm}: #{k} (red circle)",
              vmin=0, vmax=8, ra_axis=g_ra, el_axis=g_el)
-    ax[1].plot(r0, y0, "o", mfc="none", mec="r", ms=22, mew=2)
-    plot_ds(ax[1], e, t, mm, f"Candidate {k}")
+    ax.plot(r0, y0, "o", mfc="none", mec="r", ms=22, mew=2)
+
+    if ds_and_sk:
+        # Dynamic spectrum & SK parameter
+        fig, ax = plt.subplots(1, 3, gridspec_kw={"width_ratios": [1, 1, 1]}, figsize=(16, 4) )
+        plot_img(ax[0], e, t, mm, f"Candidate {k} at peak")
+        plot_ds(ax[1], e, t, mm, f"Candidate {k}")
+        sk(ax[2], e, t, mm)
+        
 
     # A wider view, with the catalogue sources that transit in it
     st = (g_ra > r0 - half_ra_deg) & (g_ra < r0 + half_ra_deg)
@@ -669,8 +734,9 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2):
     plot_spectrum(ax[2], e, t, mm, color="C0")
     plt.tight_layout()
 
-    band_panels(e, t, mm, f"#{k}: all bands and each sub-band")
+    #band_panels(e, t, mm, f"#{k}: all bands and each sub-band")
     return fig, ax
+
 
 
 #@me PLAYING AROUND =============
@@ -763,6 +829,7 @@ parts2 = ["<h1>LSD %d Scintillation Diagnostics</h1>" % LSD]
 
 #Check the first 50 identified as scintillation
 
+#todo Doesn't print super nicely and has some summary plots in the front even though I didn't think there would be. 
 MAKE_SCINTILLATION_DIAGNOSTIC = True
 if MAKE_SCINTILLATION_DIAGNOSTIC:
     PICK = list(scintillation.index[:30])
@@ -816,4 +883,4 @@ if MAKE_SCINTILLATION_DIAGNOSTIC:
             parts2.append(PAGE_BREAK) 
 
     html = style + "".join(parts2)
-    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_scintillation_diagnostic_wDS.pdf")
+    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_ScintillationandSK.pdf")
