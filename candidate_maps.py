@@ -320,6 +320,20 @@ def plot_spectrum(ax, eg, tg, mm, label=None, **kw):
     ax.axhline(0, color="k", lw=0.5)
     ax.set(xlabel="frequency [MHz]", ylabel="S/N in the sub-band (best x)", xlim=(398, 800))
 
+
+def get_ds(eg, tg, mm, window=120, **kw):
+    if HAVE_EACH_BAND:
+        start_idx = int(tg-window/2)
+        end_idx = int(tg+window/2)
+
+        times = np.round(g_ra[start_idx:end_idx], 2)
+
+        im = esnr[mm][:, eg, start_idx:end_idx]
+        im[14,:] = np.nan #Manually mask out what looked bad before
+        return im
+    else:
+        print('HAVE_EACH_BAND=False. Unable to plot dynamic spectrum.')
+
 def plot_ds(ax, eg, tg, mm, title, window=120, **kw):
     if HAVE_EACH_BAND:
         start_idx = int(tg-window/2)
@@ -545,6 +559,72 @@ if PLOT_J1634:
         fig, ax = plt.subplots()
         for k, m in enumerate(MASKS):
             eg, tg = at_group_pixel(*peak[m])
+
+            ds = get_ds(eg, tg, m) #(67, 120) (freq, time) centered on pulse
+            sk_parameter = sk(ax, eg, tg, m, plot=False) #67 (one for each freq)
+            tk_parameter = tk(ax, eg, tg, m, plot=False) #120 (one for each time)
+            tk_parameter[27] = np.nan #@me manually masking just to see what happens
+            tk_parameter[113] = np.nan #@me manually masking just to see what happens
+
+            start_idx = int(tg-60)
+            end_idx = int(tg+60)
+            times = np.round(g_ra[start_idx:end_idx], 2)
+            freqs = e_centre[::-1][::13]
+
+            fig, ax = plt.subplot_mosaic(
+            """
+            A.
+            BC
+            """,
+            width_ratios=[4, 1.3],
+            height_ratios=[1.3, 4],
+            figsize=(8, 8),
+            gridspec_kw=dict(hspace=0.05, wspace=0.05),
+            )
+
+            # Share axes manually: A shares time with B, C shares frequency with B
+            ax['A'].sharex(ax['B'])
+            ax['C'].sharey(ax['B'])
+
+            # origin='upper' assumes row 0 of ds is the HIGHEST frequency.
+            # If row 0 is the lowest, use origin='lower'.
+            ax['B'].imshow(
+                ds, aspect='auto', origin='upper',
+                extent=[times[0], times[-1], e_centre.min(), e_centre.max()],
+            )
+            ax['A'].scatter(times, tk_parameter, s=3, c='rebeccapurple')
+            ax['C'].errorbar(sk_parameter, e_centre, yerr=e_width, fmt='o', ms=2, ecolor='rebeccapurple', mfc='rebeccapurple', mec='rebeccapurple')
+
+            # Set limits last so autoscaling from the scatters doesn't override the image
+            ax['B'].set_xlim(times[0], times[-1])
+            ax['B'].set_ylim(e_centre.min(), e_centre.max())
+
+            ax['A'].tick_params(labelbottom=False)
+            ax['C'].tick_params(labelleft=False)
+            ax['B'].set_xlabel('Time Index')
+            ax['B'].set_ylabel('Frequency')
+            ax['A'].set_ylabel('TK')
+            ax['C'].set_xlabel('SK')
+
+            #plt.suptitle('J1634+44')
+            plt.savefig('maybe2.png', dpi=300)
+
+            fig, ax = plt.subplot_mosaic(
+                """
+                A .
+                B C
+                """
+            )
+            start_idx = int(tg-60)
+            end_idx = int(tg+60)
+            times = np.round(g_ra[start_idx:end_idx], 2)
+            freqs = e_centre[::-1][::13]
+
+            ax['B'].imshow(ds, aspect='auto', origin='upper', extent=[times[0], times[-1], freqs[0], freqs[-1]])
+            ax['C'].errorbar(sk_parameter, e_centre, yerr=e_width/2, fmt='o')
+            ax['A'].scatter(times, tk_parameter)
+
+            plt.savefig('Maybe.png')
 
             tk(ax, eg, tg, m)
             plt.savefig('tk.png')
