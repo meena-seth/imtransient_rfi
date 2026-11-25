@@ -21,6 +21,11 @@ plt.rcParams["figure.dpi"] = 90
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 250)
 
+#todo Added plt.close() to all the main sky maps just cuz I didn't want them in the 
+#todo pdfs with dynamic spectra, spectral kurtosis parameter, and temporal kurtosis parameter.
+#todo also Get those 3 plots to have the same axis labels so it's easier to see how features
+#todo on each of them relate. Consider using TK to replace times in chunks. 
+
 '''
 Script to generate PDF of candidate maps & inspect top 10 candidates more closely.
 =====
@@ -239,6 +244,7 @@ def two_maps(imgs, titles, **kw):
 #@me MAKING SKY MAPS ==============
 masked = {m: np.where(weight[m] > 0, snr[m], np.nan) for m in MASKS}
 fig1, ax1 = two_maps([masked[m] for m in MASKS], [f"LSD {LSD}, mask = {m}" for m in MASKS], vmin=1, vmax=1000, log=True)
+plt.close()
 
 #@me LOADING IN SKY-NOISE CORRECTED DATA (if present) ==============
 try:
@@ -251,6 +257,7 @@ try:
     weight = {m: cand[m].weight[:].local_array[0] for m in MASKS}
     masked = {m: np.where(weight[m] > 0, snr[m], np.nan) for m in MASKS}
     fig2, ax2 = two_maps([masked[m] for m in MASKS], [f"LSD {LSD}, mask = {m}, sky noise corrected" for m in MASKS], vmin=1, vmax=1000, log=True)
+    plt.close()
     SKY_NOISE_CORRECTED = True
 
 except Exception as E:
@@ -342,8 +349,8 @@ def sk(ax, eg, tg, mm, window=120, plot=True, **kw):
         im = esnr[mm][:, eg, start_idx:end_idx]
         im[14,:] = np.nan #Manually mask out what looked bad before
 
-        s1 = np.sum(im, axis=1)
-        s2 = np.sum(np.square(im), axis=1)
+        s1 = np.nansum(im, axis=1)
+        s2 = np.nansum(np.square(im), axis=1)
         m = window
         n = len(e_centre)
 
@@ -351,14 +358,41 @@ def sk(ax, eg, tg, mm, window=120, plot=True, **kw):
         sk = coeff*(m*s2/np.square(s1) - 1)
 
         if plot:
-            ax.plot(e_centre, sk, marker='o', markersize=2)
-            ax.set(xlabel='Freq(MHz)', ylabel='SK Parameter')
+            ax.plot(sk, e_centre, marker='o', markersize=2)
+            ax.set(xlabel='SK Parameter', ylabel='Freq(MHz)')
             ax.set_title(f'SK Parameter for {window} time samples')
 
         return sk
             
     else:
         print('HAVE_EACH_BAND=False. Unable to calculate SK parameter.')
+
+def tk(ax, eg, tg, mm, window=120, plot=True, **kw): 
+    if HAVE_EACH_BAND:
+        start_idx = int(tg-window/2)
+        end_idx = int(tg+window/2)
+        im = esnr[mm][:, eg, start_idx:end_idx]
+        im[14,:] = np.nan #Manually mask out what looked bad before
+
+        times = np.round(g_ra[start_idx:end_idx], 2)
+
+        s1 = np.nansum(im, axis=0)
+        s2 = np.nansum(np.square(im), axis=0)
+        n = window
+        m = len(e_centre)
+
+        coeff = (m*n*2)/(m-3)
+        tk = coeff*(m*s2/np.square(s1) - 1)
+
+        if plot:
+            ax.plot(times, tk, marker='o', markersize=2)
+            ax.set(xlabel='RA', ylabel='TK Parameter')
+            ax.set_title(f'TK Parameter for {window} time samples')
+
+        return tk
+            
+    else:
+        print('HAVE_EACH_BAND=False. Unable to calculate TK parameter.')        
 
 def median_snr(eg, tg, mm, label=None, **kw):
     """S/N in each sub-band (and each 6 MHz band, if available) at one sample of the group maps."""
@@ -420,7 +454,7 @@ def band_panels(eg, tg, mm, title, half_el=25, half_ra=40):
     fig.suptitle(title)
     return fig, axes
 
-def plot_img(ax, eg, tg, mm, title, half_el=25, half_ra=40):
+def plot_img(fig, ax, eg, tg, mm, title, half_el=25, half_ra=40):
     '''
     Same as band panels, just only doing 'all'
     '''
@@ -435,7 +469,7 @@ def plot_img(ax, eg, tg, mm, title, half_el=25, half_ra=40):
     edge_marks(ax, g_ra[tg], g_el[eg])
     ax.set_title(f"'All' ({lo:.0f}-{hi:.0f} MHz)", fontsize=12)
     ax.set(xlabel="RA at the start [deg]", ylabel="telescope-y")
-    fig.colorbar(im, ax=axes, pad=0.01, label="S/N (best x)")
+    fig.colorbar(im, ax=ax, pad=0.01, label="S/N (best x)")
     ax.set_title(title)
 
 
@@ -465,6 +499,7 @@ else:
     title = f"LSD {LSD} mask = {m}+narrowband mitigation?"
 
 fig3, ax3 = two_maps([masked[m] for m in MASKS], [title for m in MASKS], vmin=1, vmax=1000, log=True)
+plt.close()
 
 #@me making dynamic spectra for j1634+44
 def zoom_index(e, t, half_el=40, half_ra=60, shape=None):
@@ -510,7 +545,12 @@ if PLOT_J1634:
         fig, ax = plt.subplots()
         for k, m in enumerate(MASKS):
             eg, tg = at_group_pixel(*peak[m])
-            plot_img(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
+
+            tk(ax, eg, tg, m)
+            plt.savefig('tk.png')
+
+            fig, ax=plt.subplots()
+            plot_img(fig, ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
 
             plot_ds(ax, eg, tg, m, f"J1634+44 on LSD {LSD}, at the peak")
             plt.savefig('ds_masked413MHz.png')
@@ -707,10 +747,11 @@ def show_candidate(k, mm="full", half_ra_deg=20.0, half_el=0.2, ds_and_sk=True):
 
     if ds_and_sk:
         # Dynamic spectrum & SK parameter
-        fig, ax = plt.subplots(1, 3, gridspec_kw={"width_ratios": [1, 1, 1]}, figsize=(16, 4) )
-        plot_img(ax[0], e, t, mm, f"Candidate {k} at peak")
+        fig, ax = plt.subplots(1, 4, gridspec_kw={"width_ratios": [1, 1, 1, 1]}, figsize=(16, 4) )
+        plot_img(fig, ax[0], e, t, mm, f"Candidate {k} at peak")
         plot_ds(ax[1], e, t, mm, f"Candidate {k}")
         sk(ax[2], e, t, mm)
+        tk(ax[3], e, t, mm)
         
 
     # A wider view, with the catalogue sources that transit in it
@@ -883,4 +924,4 @@ if MAKE_SCINTILLATION_DIAGNOSTIC:
             parts2.append(PAGE_BREAK) 
 
     html = style + "".join(parts2)
-    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_ScintillationandSK.pdf")
+    HTML(string=html).write_pdf(f"{OUT_DIR}lsd_{LSD}_Scintillation_SK_TK.pdf")
